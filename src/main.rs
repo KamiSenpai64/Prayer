@@ -203,10 +203,10 @@ struct Track {
 enum ActiveTab { Player, Albums, Playlists, Downloader, Metadata }
 
 #[derive(PartialEq)]
-enum Focus { Artist, Album, Track, Queue, AlbumsView, PlaylistsList, PlaylistsTracks, Downloader, Metadata }
+enum Focus { Artist, Album, Track, Queue, AlbumsView, PlaylistsList, PlaylistsTracks, Downloader, MetadataAlbums, MetadataTracks }
 
 #[derive(PartialEq)]
-enum Modal { None, Search, Help, PlaylistSelect, PlaylistCreate }
+enum Modal { None, Search, Help, PlaylistSelect, PlaylistCreate, EditMetadata }
 
 struct App {
     config: AppConfig,
@@ -257,6 +257,14 @@ struct App {
     is_focused_mode: bool,
     downloader: downloader::DownloaderState,
     metadata_editor: metadata::MetadataState,
+    
+    edit_title: String,
+    edit_artist: String,
+    edit_album: String,
+    edit_year: String,
+    edit_track: String,
+    edit_focus: usize,
+    is_bulk_edit: bool,
 }
 
 impl App {
@@ -357,6 +365,13 @@ impl App {
                     .join("Prayer")
                     .join("tmp")
             ),
+            edit_title: String::new(),
+            edit_artist: String::new(),
+            edit_album: String::new(),
+            edit_year: String::new(),
+            edit_track: String::new(),
+            edit_focus: 0,
+            is_bulk_edit: false,
         };
 
         if !app.artists.is_empty() {
@@ -469,7 +484,51 @@ impl App {
         else if self.active_tab == ActiveTab::Player { self.focus = Focus::Track; }
         else if self.active_tab == ActiveTab::Playlists { self.focus = Focus::PlaylistsList; }
         else if self.active_tab == ActiveTab::Downloader { self.focus = Focus::Downloader; }
-        else if self.active_tab == ActiveTab::Metadata { self.focus = Focus::Metadata; }
+        else if self.active_tab == ActiveTab::Metadata { self.focus = Focus::MetadataAlbums; }
+    }
+
+    fn reload_library(&mut self) {
+        let all_tracks = scan_directory(&self.config.music_directory);
+        
+        let mut artists_set = HashSet::new();
+        let mut albums_by_artist: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut tracks_by_album: HashMap<(String, String), Vec<Track>> = HashMap::new();
+
+        for track in &all_tracks {
+            artists_set.insert(track.artist.clone());
+            let album_display = if track.year.trim() == "----" || track.year.is_empty() { track.album.clone() } else { format!("[{}] {}", track.year, track.album) };
+            albums_by_artist.entry(track.artist.clone()).or_default().insert(album_display.clone());
+            tracks_by_album.entry((track.artist.clone(), album_display)).or_default().push(track.clone());
+        }
+
+        let mut artists: Vec<String> = artists_set.into_iter().collect();
+        artists.sort_by_key(|a| a.to_lowercase());
+
+        let mut final_albums = HashMap::new();
+        for (artist, albums) in albums_by_artist {
+            let mut album_list: Vec<String> = albums.into_iter().collect();
+            album_list.sort_by_key(|a| a.to_lowercase());
+            final_albums.insert(artist, album_list);
+        }
+
+        for tracks in tracks_by_album.values_mut() {
+            tracks.sort_by(|a, b| a.track_number.cmp(&b.track_number).then(a.title.to_lowercase().cmp(&b.title.to_lowercase())));
+        }
+        
+        let mut all_albums = vec![];
+        for artist in &artists {
+            if let Some(albums) = final_albums.get(artist) {
+                for album in albums {
+                    all_albums.push((artist.clone(), album.clone()));
+                }
+            }
+        }
+        
+        self.all_tracks = all_tracks;
+        self.artists = artists;
+        self.albums_by_artist = final_albums;
+        self.tracks_by_album = tracks_by_album;
+        self.all_albums = all_albums;
     }
 
     fn next_focus(&mut self) {
@@ -484,6 +543,11 @@ impl App {
                 Focus::PlaylistsList => Focus::PlaylistsTracks,
                 _ => Focus::PlaylistsList,
             }
+        } else if self.active_tab == ActiveTab::Metadata {
+            self.focus = match self.focus {
+                Focus::MetadataAlbums => Focus::MetadataTracks,
+                _ => Focus::MetadataAlbums,
+            }
         }
     }
     fn prev_focus(&mut self) {
@@ -497,6 +561,11 @@ impl App {
             self.focus = match self.focus {
                 Focus::PlaylistsTracks => Focus::PlaylistsList,
                 _ => Focus::PlaylistsTracks,
+            }
+        } else if self.active_tab == ActiveTab::Metadata {
+            self.focus = match self.focus {
+                Focus::MetadataTracks => Focus::MetadataAlbums,
+                _ => Focus::MetadataTracks,
             }
         }
     }
@@ -523,7 +592,13 @@ impl App {
             Focus::Downloader => {
                 self.downloader.selected_index = self.downloader.selected_index.saturating_sub(1);
             },
-            Focus::Metadata => {},
+            Focus::MetadataAlbums => {
+                self.metadata_editor.selected_album = self.metadata_editor.selected_album.saturating_sub(1);
+                self.metadata_editor.selected_track = 0;
+            },
+            Focus::MetadataTracks => {
+                self.metadata_editor.selected_track = self.metadata_editor.selected_track.saturating_sub(1);
+            },
         }
         if self.active_tab == ActiveTab::Player && self.focus != Focus::Queue { self.update_cascading_selection(); }
     }
@@ -584,7 +659,21 @@ impl App {
                     self.downloader.selected_index = (self.downloader.selected_index + 1).min(len - 1);
                 }
             },
-            Focus::Metadata => {},
+            Focus::MetadataAlbums => {
+                let len = self.metadata_editor.albums.len();
+                if len > 0 {
+                    self.metadata_editor.selected_album = (self.metadata_editor.selected_album + 1).min(len - 1);
+                    self.metadata_editor.selected_track = 0;
+                }
+            },
+            Focus::MetadataTracks => {
+                if let Some(album) = self.metadata_editor.albums.get(self.metadata_editor.selected_album) {
+                    let len = album.tracks.len();
+                    if len > 0 {
+                        self.metadata_editor.selected_track = (self.metadata_editor.selected_track + 1).min(len - 1);
+                    }
+                }
+            },
         }
         if self.active_tab == ActiveTab::Player && self.focus != Focus::Queue { self.update_cascading_selection(); }
     }
@@ -998,21 +1087,67 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         }
                     },
                     Modal::PlaylistCreate => {
-                        match key.code {
-                            KeyCode::Esc => app.modal = Modal::PlaylistSelect,
-                            KeyCode::Enter => {
-                                if !app.new_playlist_name.is_empty() {
-                                    let name = app.new_playlist_name.clone();
-                                    app.playlists.lists.entry(name.clone()).or_insert_with(Vec::new);
-                                    if let Some(track) = &app.playlist_target_track {
-                                        app.playlists.lists.get_mut(&name).unwrap().push(track.path.clone());
-                                    }
-                                    save_playlists(&app.playlists);
+                        if key.code == KeyCode::Esc { app.modal = Modal::None; }
+                        else if key.code == KeyCode::Enter {
+                            if !app.new_playlist_name.is_empty() {
+                                let name = app.new_playlist_name.clone();
+                                app.playlists.lists.entry(name.clone()).or_insert_with(Vec::new);
+                                if let Some(track) = &app.playlist_target_track {
+                                    app.playlists.lists.get_mut(&name).unwrap().push(track.path.clone());
                                 }
+                                save_playlists(&app.playlists);
                                 app.modal = Modal::None;
                             }
-                            KeyCode::Backspace => { app.new_playlist_name.pop(); },
-                            KeyCode::Char(c) => { app.new_playlist_name.push(c); },
+                        }
+                        else if key.code == KeyCode::Backspace { app.new_playlist_name.pop(); }
+                        else if let KeyCode::Char(c) = key.code { app.new_playlist_name.push(c); }
+                    },
+                    Modal::EditMetadata => {
+                        match key.code {
+                            KeyCode::Esc => app.modal = Modal::None,
+                            KeyCode::Tab | KeyCode::Down => {
+                                let max = if app.is_bulk_edit { 3 } else { 5 };
+                                app.edit_focus = (app.edit_focus + 1) % max;
+                            },
+                            KeyCode::BackTab | KeyCode::Up => {
+                                let max = if app.is_bulk_edit { 3 } else { 5 };
+                                app.edit_focus = (app.edit_focus + max - 1) % max;
+                            },
+                            KeyCode::Enter => {
+                                if let Some(album) = app.metadata_editor.albums.get(app.metadata_editor.selected_album) {
+                                    if app.is_bulk_edit {
+                                        for track in &album.tracks {
+                                            crate::metadata::MetadataState::save_track_metadata(&track.path, &track.title, &app.edit_artist, &app.edit_album, &app.edit_year, &track.track_number);
+                                        }
+                                        app.metadata_editor.scan_directory();
+                                    } else if let Some(track) = album.tracks.get(app.metadata_editor.selected_track) {
+                                        if crate::metadata::MetadataState::save_track_metadata(&track.path, &app.edit_title, &app.edit_artist, &app.edit_album, &app.edit_year, &app.edit_track) {
+                                            app.metadata_editor.scan_directory();
+                                        }
+                                    }
+                                }
+                                app.modal = Modal::None;
+                            },
+                            KeyCode::Backspace => {
+                                match app.edit_focus {
+                                    0 => if app.is_bulk_edit { app.edit_artist.pop(); } else { app.edit_title.pop(); },
+                                    1 => if app.is_bulk_edit { app.edit_album.pop(); } else { app.edit_artist.pop(); },
+                                    2 => if app.is_bulk_edit { app.edit_year.pop(); } else { app.edit_album.pop(); },
+                                    3 => if !app.is_bulk_edit { app.edit_year.pop(); },
+                                    4 => if !app.is_bulk_edit { app.edit_track.pop(); },
+                                    _ => {}
+                                }
+                            },
+                            KeyCode::Char(c) => {
+                                match app.edit_focus {
+                                    0 => if app.is_bulk_edit { app.edit_artist.push(c); } else { app.edit_title.push(c); },
+                                    1 => if app.is_bulk_edit { app.edit_album.push(c); } else { app.edit_artist.push(c); },
+                                    2 => if app.is_bulk_edit { app.edit_year.push(c); } else { app.edit_album.push(c); },
+                                    3 => if !app.is_bulk_edit { app.edit_year.push(c); },
+                                    4 => if !app.is_bulk_edit { app.edit_track.push(c); },
+                                    _ => {}
+                                }
+                            },
                             _ => {}
                         }
                     },
@@ -1063,7 +1198,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             KeyCode::PageUp => app.prev_tab(),
                             KeyCode::Down | KeyCode::Char('j') => app.move_down(),
                             KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-                            KeyCode::Right | KeyCode::Char('l') => app.next_focus(),
+                            KeyCode::Right => app.next_focus(),
                             KeyCode::Left | KeyCode::Char('h') => app.prev_focus(),
                             KeyCode::Tab => app.next_focus(),
                             KeyCode::BackTab => app.prev_focus(),
@@ -1071,6 +1206,63 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             KeyCode::Char('s') => {
                                 if app.active_tab == ActiveTab::Downloader {
                                     app.downloader.download_selected();
+                                }
+                            },
+                            KeyCode::Char('e') => {
+                                if app.active_tab == ActiveTab::Metadata {
+                                    if let Some(album) = app.metadata_editor.albums.get(app.metadata_editor.selected_album) {
+                                        if let Some(track) = album.tracks.get(app.metadata_editor.selected_track) {
+                                            app.edit_title = track.title.clone();
+                                            app.edit_artist = track.artist.clone();
+                                            app.edit_album = track.album.clone();
+                                            app.edit_year = track.year.clone();
+                                            app.edit_track = track.track_number.to_string();
+                                            app.edit_focus = 0;
+                                            app.is_bulk_edit = false;
+                                            app.modal = Modal::EditMetadata;
+                                        }
+                                    }
+                                }
+                            },
+                            KeyCode::Char('E') => {
+                                if app.active_tab == ActiveTab::Metadata {
+                                    if let Some(album) = app.metadata_editor.albums.get(app.metadata_editor.selected_album) {
+                                        if let Some(track) = album.tracks.first() {
+                                            app.edit_artist = track.artist.clone();
+                                            app.edit_album = track.album.clone();
+                                            app.edit_year = track.year.clone();
+                                            app.edit_focus = 0;
+                                            app.is_bulk_edit = true;
+                                            app.modal = Modal::EditMetadata;
+                                        }
+                                    }
+                                }
+                            },
+                            KeyCode::Char('l') => {
+                                if app.active_tab == ActiveTab::Metadata {
+                                    if app.focus == Focus::MetadataAlbums || app.focus == Focus::MetadataTracks {
+                                        app.metadata_editor.fetch_lyrics(app.metadata_editor.selected_album);
+                                    } else {
+                                        app.next_focus();
+                                    }
+                                } else {
+                                    app.next_focus();
+                                }
+                            },
+                            KeyCode::Char('m') => {
+                                if app.active_tab == ActiveTab::Metadata {
+                                    if app.focus == Focus::MetadataAlbums || app.focus == Focus::MetadataTracks {
+                                        app.metadata_editor.move_album_to_library(app.metadata_editor.selected_album, std::path::PathBuf::from(&app.config.music_directory));
+                                        
+                                        // Update app library tracks
+                                        app.reload_library();
+                                        app.sync_focus_to_tab();
+                                    }
+                                }
+                            },
+                            KeyCode::Char('r') => {
+                                if app.active_tab == ActiveTab::Metadata {
+                                    app.metadata_editor.scan_directory();
                                 }
                             },
                             KeyCode::Char(' ') => {
@@ -1440,6 +1632,40 @@ fn draw_modal(f: &mut Frame, app: &mut App, theme: Color) {
         let input_text = Paragraph::new(format!("> {}_", app.new_playlist_name));
         f.render_widget(input_text, inner);
 
+    } else if app.modal == Modal::EditMetadata {
+        let area = centered_rect(50, if app.is_bulk_edit { 30 } else { 40 }, f.area());
+        f.render_widget(Clear, area);
+        let title_text = if app.is_bulk_edit { " Bulk Edit Album (Enter to Save) " } else { " Edit Metadata (Enter to Save) " };
+        let block = Block::default().title(title_text).borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(theme));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let fields = if app.is_bulk_edit {
+            vec![
+                ("Artist", &app.edit_artist, 0),
+                ("Album", &app.edit_album, 1),
+                ("Year", &app.edit_year, 2),
+            ]
+        } else {
+            vec![
+                ("Title", &app.edit_title, 0),
+                ("Artist", &app.edit_artist, 1),
+                ("Album", &app.edit_album, 2),
+                ("Year", &app.edit_year, 3),
+                ("Track Number", &app.edit_track, 4),
+            ]
+        };
+
+        let constraints: Vec<Constraint> = fields.iter().map(|_| Constraint::Length(3)).collect();
+        let chunks = Layout::default().direction(Direction::Vertical).constraints(constraints).split(inner);
+
+        for (label, val, idx) in fields {
+            let mut text = format!("{}", val);
+            if app.edit_focus == idx { text.push('█'); }
+            let style = if app.edit_focus == idx { Style::default().fg(theme) } else { Style::default() };
+            let p = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(label).border_style(style));
+            f.render_widget(p, chunks[idx]);
+        }
     } else if app.modal == Modal::Help {
         let area = centered_rect(50, 70, f.area());
         f.render_widget(Clear, area);
@@ -1510,7 +1736,41 @@ fn draw_downloader_tab(f: &mut Frame, app: &mut App, area: Rect, theme: Color) {
 }
 
 fn draw_metadata_tab(f: &mut Frame, app: &mut App, area: Rect, theme: Color) {
-    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Metadata Editor ").border_style(Style::default().fg(theme));
-    let para = Paragraph::new("Coming soon...").block(block);
-    f.render_widget(para, area);
+    let chunks = Layout::default().direction(Direction::Vertical).constraints([
+        Constraint::Length(3),
+        Constraint::Min(0),
+    ]).split(area);
+
+    let status_block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(theme));
+    let mut status_msg = app.metadata_editor.status.clone();
+    let is_loading = *app.metadata_editor.is_loading.lock().unwrap();
+    if is_loading { status_msg = format!("{} [WAIT]", status_msg); }
+    else { status_msg = format!("{} | l: fetch lyrics | m: move album to library", status_msg); }
+    
+    f.render_widget(Paragraph::new(status_msg).block(status_block), chunks[0]);
+
+    let columns = Layout::default().direction(Direction::Horizontal).constraints([Constraint::Percentage(30), Constraint::Percentage(70)]).split(chunks[1]);
+    
+    let active_style = Style::default().bg(Color::DarkGray).fg(theme).add_modifier(Modifier::BOLD);
+    
+    let album_items: Vec<ListItem> = app.metadata_editor.albums.iter().enumerate().map(|(i, a)| {
+        let prefix = if i == app.metadata_editor.selected_album { ">>" } else { "  " };
+        let style = if i == app.metadata_editor.selected_album && app.focus == Focus::MetadataAlbums { active_style } else { Style::default() };
+        ListItem::new(format!("{} {} ({} tracks)", prefix, a.name, a.tracks.len())).style(style)
+    }).collect();
+    
+    let album_list = List::new(album_items).block(create_block(" Albums ", app.focus == Focus::MetadataAlbums, theme));
+    f.render_widget(album_list, columns[0]);
+
+    let mut track_items = Vec::new();
+    if let Some(album) = app.metadata_editor.albums.get(app.metadata_editor.selected_album) {
+        track_items = album.tracks.iter().enumerate().map(|(i, t)| {
+            let prefix = if i == app.metadata_editor.selected_track { ">>" } else { "  " };
+            let style = if i == app.metadata_editor.selected_track && app.focus == Focus::MetadataTracks { active_style } else { Style::default() };
+            ListItem::new(format!("{} [{}] {} - {} | Year: {}", prefix, t.track_number, t.artist, t.title, t.year)).style(style)
+        }).collect();
+    }
+    
+    let track_list = List::new(track_items).block(create_block(" Tracks (Press 'e' to edit) ", app.focus == Focus::MetadataTracks, theme));
+    f.render_widget(track_list, columns[1]);
 }

@@ -53,22 +53,62 @@ impl MetadataState {
             for entry in WalkDir::new(&self.tmp_dir).into_iter().filter_map(|e| e.ok()) {
                 let path = entry.path();
                 if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("m4a") {
+                    let mut tag_title = String::new();
+                    let mut tag_artist = String::new();
+                    let mut tag_album = String::new();
+                    let mut tag_year = String::new();
+                    let mut tag_track_number = String::new();
+                    
                     if let Ok(tag) = Tag::read_from_path(path) {
-                        let title = tag.title().unwrap_or("Unknown Title").to_string();
-                        let artist = tag.artist().unwrap_or("Unknown Artist").to_string();
-                        let album = tag.album().unwrap_or("Unknown Album").to_string();
-                        let year = tag.year().map(|y| y.to_string()).unwrap_or_else(|| "".to_string());
-                        let track_number = tag.track_number().map(|t| t.to_string()).unwrap_or_else(|| "".to_string());
-                        
-                        parsed_tracks.push(TrackMetadata {
-                            path: path.to_path_buf(),
-                            title,
-                            artist,
-                            album,
-                            year,
-                            track_number,
-                        });
+                        tag_title = tag.title().unwrap_or("").to_string();
+                        tag_artist = tag.artist().unwrap_or("").to_string();
+                        tag_album = tag.album().unwrap_or("").to_string();
+                        tag_year = tag.year().map(|y| y.to_string()).unwrap_or_else(|| "".to_string());
+                        tag_track_number = tag.track_number().map(|t| t.to_string()).unwrap_or_else(|| "".to_string());
                     }
+                    
+                    if tag_artist.is_empty() || tag_artist == "Unknown Artist" {
+                        if let Some(parent) = path.parent().and_then(|p| p.parent()).and_then(|p| p.file_name()) {
+                            let n = parent.to_string_lossy().into_owned();
+                            if n != "tmp" { tag_artist = n; }
+                        }
+                    }
+                    if tag_album.is_empty() || tag_album == "Unknown Album" {
+                        if let Some(parent) = path.parent().and_then(|p| p.file_name()) {
+                            let p = parent.to_string_lossy().into_owned();
+                            if p.starts_with("(") && p.contains(") - ") {
+                                let parts: Vec<&str> = p.splitn(2, ") - ").collect();
+                                if parts.len() == 2 {
+                                    tag_album = parts[1].to_string();
+                                    if tag_year.is_empty() { tag_year = parts[0][1..].to_string(); }
+                                }
+                            } else {
+                                tag_album = p;
+                            }
+                        }
+                    }
+                    if tag_title.is_empty() || tag_title == "Unknown Title" {
+                        if let Some(file_name) = path.file_stem() {
+                            let mut name = file_name.to_string_lossy().into_owned();
+                            if name.contains(" - ") {
+                                let parts: Vec<&str> = name.splitn(2, " - ").collect();
+                                if parts[0].chars().all(|c| c.is_digit(10)) {
+                                    if tag_track_number.is_empty() { tag_track_number = parts[0].to_string(); }
+                                    name = parts[1].to_string();
+                                }
+                            }
+                            tag_title = name;
+                        }
+                    }
+
+                    parsed_tracks.push(TrackMetadata {
+                        path: path.to_path_buf(),
+                        title: if tag_title.is_empty() { "Unknown Title".to_string() } else { tag_title },
+                        artist: if tag_artist.is_empty() { "Unknown Artist".to_string() } else { tag_artist },
+                        album: if tag_album.is_empty() { "Unknown Album".to_string() } else { tag_album },
+                        year: tag_year,
+                        track_number: tag_track_number,
+                    });
                 }
             }
         }
@@ -94,15 +134,14 @@ impl MetadataState {
     }
 
     pub fn save_track_metadata(path: &PathBuf, title: &str, artist: &str, album: &str, year: &str, track_number: &str) -> bool {
-        if let Ok(mut tag) = Tag::read_from_path(path) {
-            tag.set_title(title);
-            tag.set_artist(artist);
-            tag.set_album(album);
-            tag.set_year(year.trim());
-            if let Ok(t) = track_number.trim().parse::<u16>() { tag.set_track_number(t); }
-            return tag.write_to_path(path).is_ok();
-        }
-        false
+        let mut tag = Tag::read_from_path(path).unwrap_or_else(|_| Tag::default());
+        tag.set_title(title);
+        tag.set_artist(artist);
+        tag.set_album_artist(artist); // Set album artist as well for better grouping
+        tag.set_album(album);
+        tag.set_year(year.trim());
+        if let Ok(t) = track_number.trim().parse::<u16>() { tag.set_track_number(t); }
+        tag.write_to_path(path).is_ok()
     }
 
     pub fn fetch_lyrics(&mut self, album_index: usize) {
@@ -161,8 +200,8 @@ impl MetadataState {
             
             let lrc_path = track.path.with_extension("lrc");
             if lrc_path.exists() {
-                let dest_lrc = dest_path.with_extension("lrc");
-                let _ = std::fs::rename(&lrc_path, &dest_lrc);
+                let dest_lrc_path = dest_path.with_extension("lrc");
+                let _ = std::fs::rename(&lrc_path, &dest_lrc_path);
             }
         }
         

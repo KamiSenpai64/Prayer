@@ -206,7 +206,7 @@ enum ActiveTab { Player, Albums, Playlists, Downloader, Metadata }
 enum Focus { Artist, Album, Track, Queue, AlbumsView, PlaylistsList, PlaylistsTracks, Downloader, MetadataAlbums, MetadataTracks }
 
 #[derive(PartialEq)]
-enum Modal { None, Search, Help, PlaylistSelect, PlaylistCreate, EditMetadata }
+enum Modal { None, Search, Help, PlaylistSelect, PlaylistCreate, EditMetadata, DownloaderSearch, MoveAlbum }
 
 struct App {
     config: AppConfig,
@@ -263,8 +263,10 @@ struct App {
     edit_album: String,
     edit_year: String,
     edit_track: String,
+    edit_filename: String,
     edit_focus: usize,
     is_bulk_edit: bool,
+    move_album_dest: String,
 }
 
 impl App {
@@ -356,8 +358,6 @@ impl App {
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
                     .join("Prayer")
                     .join("tmp")
-                    .to_string_lossy()
-                    .into_owned(),
             ),
             metadata_editor: metadata::MetadataState::new(
                 dirs::config_dir()
@@ -370,8 +370,10 @@ impl App {
             edit_album: String::new(),
             edit_year: String::new(),
             edit_track: String::new(),
+            edit_filename: String::new(),
             edit_focus: 0,
             is_bulk_edit: false,
+            move_album_dest: String::new(),
         };
 
         if !app.artists.is_empty() {
@@ -1021,6 +1023,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 
         terminal.draw(|f| ui(f, app))?;
 
+        let mut finished = false;
+        if let Ok(mut lock) = app.downloader.download_finished.lock() {
+            if *lock {
+                *lock = false;
+                finished = true;
+            }
+        }
+        if finished {
+            app.active_tab = ActiveTab::Metadata;
+            app.metadata_editor.scan_directory();
+        }
+
         if crossterm::event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 match app.modal {
@@ -1106,11 +1120,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         match key.code {
                             KeyCode::Esc => app.modal = Modal::None,
                             KeyCode::Tab | KeyCode::Down => {
-                                let max = if app.is_bulk_edit { 3 } else { 5 };
+                                let max = if app.is_bulk_edit { 3 } else { 6 };
                                 app.edit_focus = (app.edit_focus + 1) % max;
                             },
                             KeyCode::BackTab | KeyCode::Up => {
-                                let max = if app.is_bulk_edit { 3 } else { 5 };
+                                let max = if app.is_bulk_edit { 3 } else { 6 };
                                 app.edit_focus = (app.edit_focus + max - 1) % max;
                             },
                             KeyCode::Enter => {
@@ -1121,7 +1135,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                         }
                                         app.metadata_editor.scan_directory();
                                     } else if let Some(track) = album.tracks.get(app.metadata_editor.selected_track) {
-                                        if crate::metadata::MetadataState::save_track_metadata(&track.path, &app.edit_title, &app.edit_artist, &app.edit_album, &app.edit_year, &app.edit_track) {
+                                        let old_path = track.path.clone();
+                                        if crate::metadata::MetadataState::save_track_metadata(&old_path, &app.edit_title, &app.edit_artist, &app.edit_album, &app.edit_year, &app.edit_track) {
+                                            if !app.edit_filename.is_empty() {
+                                                let new_path = old_path.with_file_name(&app.edit_filename);
+                                                if std::fs::rename(&old_path, &new_path).is_ok() {
+                                                    let old_lrc = old_path.with_extension("lrc");
+                                                    let new_lrc = new_path.with_extension("lrc");
+                                                    if old_lrc.exists() {
+                                                        let _ = std::fs::rename(&old_lrc, &new_lrc);
+                                                    }
+                                                }
+                                            }
                                             app.metadata_editor.scan_directory();
                                         }
                                     }
@@ -1135,6 +1160,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                     2 => if app.is_bulk_edit { app.edit_year.pop(); } else { app.edit_album.pop(); },
                                     3 => if !app.is_bulk_edit { app.edit_year.pop(); },
                                     4 => if !app.is_bulk_edit { app.edit_track.pop(); },
+                                    5 => if !app.is_bulk_edit { app.edit_filename.pop(); },
                                     _ => {}
                                 }
                             },
@@ -1145,9 +1171,38 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                     2 => if app.is_bulk_edit { app.edit_year.push(c); } else { app.edit_album.push(c); },
                                     3 => if !app.is_bulk_edit { app.edit_year.push(c); },
                                     4 => if !app.is_bulk_edit { app.edit_track.push(c); },
+                                    5 => if !app.is_bulk_edit { app.edit_filename.push(c); },
                                     _ => {}
                                 }
                             },
+                            _ => {}
+                        }
+                    },
+                    Modal::DownloaderSearch => {
+                        match key.code {
+                            KeyCode::Esc => app.modal = Modal::None,
+                            KeyCode::Enter => {
+                                app.downloader.search(app.downloader.query.clone());
+                                app.modal = Modal::None;
+                            },
+                            KeyCode::Backspace => { app.downloader.query.pop(); },
+                            KeyCode::Char(c) => { app.downloader.query.push(c); },
+                            _ => {}
+                        }
+                    },
+                    Modal::MoveAlbum => {
+                        match key.code {
+                            KeyCode::Esc => app.modal = Modal::None,
+                            KeyCode::Enter => {
+                                if !app.move_album_dest.is_empty() {
+                                    app.metadata_editor.move_album_to_library(app.metadata_editor.selected_album, std::path::PathBuf::from(&app.move_album_dest));
+                                    app.reload_library();
+                                    app.sync_focus_to_tab();
+                                }
+                                app.modal = Modal::None;
+                            },
+                            KeyCode::Backspace => { app.move_album_dest.pop(); },
+                            KeyCode::Char(c) => { app.move_album_dest.push(c); },
                             _ => {}
                         }
                     },
@@ -1173,8 +1228,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             continue;
                         }
                         if key.code == KeyCode::Char('/') && app.active_tab == ActiveTab::Downloader {
-                            app.modal = Modal::Search;
-                            app.search_query.clear();
+                            app.modal = Modal::DownloaderSearch;
+                            app.downloader.query.clear();
                             continue;
                         }
                         if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -1205,7 +1260,26 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             KeyCode::Enter => app.play_selected(),
                             KeyCode::Char('s') => {
                                 if app.active_tab == ActiveTab::Downloader {
+                                    app.downloader.toggle_selection();
+                                }
+                            },
+                            KeyCode::Char('a') => {
+                                if app.active_tab == ActiveTab::Downloader {
+                                    app.downloader.search_albums_only = !app.downloader.search_albums_only;
+                                } else {
+                                    app.toggle_queue_selected();
+                                }
+                            },
+                            KeyCode::Char('c') => {
+                                if app.active_tab == ActiveTab::Downloader {
+                                    app.downloader.cancel_download();
+                                }
+                            },
+                            KeyCode::Char('d') => {
+                                if app.active_tab == ActiveTab::Downloader {
                                     app.downloader.download_selected();
+                                } else {
+                                    app.delete_selected_playlist_track();
                                 }
                             },
                             KeyCode::Char('e') => {
@@ -1217,6 +1291,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                             app.edit_album = track.album.clone();
                                             app.edit_year = track.year.clone();
                                             app.edit_track = track.track_number.to_string();
+                                            app.edit_filename = track.path.file_name().unwrap().to_string_lossy().into_owned();
                                             app.edit_focus = 0;
                                             app.is_bulk_edit = false;
                                             app.modal = Modal::EditMetadata;
@@ -1252,11 +1327,8 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             KeyCode::Char('m') => {
                                 if app.active_tab == ActiveTab::Metadata {
                                     if app.focus == Focus::MetadataAlbums || app.focus == Focus::MetadataTracks {
-                                        app.metadata_editor.move_album_to_library(app.metadata_editor.selected_album, std::path::PathBuf::from(&app.config.music_directory));
-                                        
-                                        // Update app library tracks
-                                        app.reload_library();
-                                        app.sync_focus_to_tab();
+                                        app.move_album_dest = app.config.music_directory.clone();
+                                        app.modal = Modal::MoveAlbum;
                                     }
                                 }
                             },
@@ -1272,8 +1344,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                     app.toggle_playback();
                                 }
                             },
-                            KeyCode::Char('a') => app.toggle_queue_selected(),
-                            KeyCode::Char('d') => app.delete_selected_playlist_track(),
+
                             _ => {}
                         }
                     }
@@ -1653,6 +1724,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, theme: Color) {
                 ("Album", &app.edit_album, 2),
                 ("Year", &app.edit_year, 3),
                 ("Track Number", &app.edit_track, 4),
+                ("Filename", &app.edit_filename, 5),
             ]
         };
 
@@ -1698,6 +1770,14 @@ fn draw_modal(f: &mut Frame, app: &mut App, theme: Color) {
             Line::from(vec![Span::styled("Press Esc or ? to close this window.", Style::default().fg(Color::DarkGray))]),
         ];
         f.render_widget(Paragraph::new(help_text).wrap(Wrap { trim: false }).alignment(Alignment::Left), inner);
+    } else if app.modal == Modal::MoveAlbum {
+        let area = centered_rect(50, 10, f.area());
+        f.render_widget(Clear, area);
+        let block = Block::default().title(" Move Album To (Enter to Save) ").borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(theme));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let input_text = Paragraph::new(format!("> {}█", app.move_album_dest));
+        f.render_widget(input_text, inner);
     }
 }
 
@@ -1707,10 +1787,11 @@ fn draw_downloader_tab(f: &mut Frame, app: &mut App, area: Rect, theme: Color) {
         Constraint::Min(0),
     ]).split(area);
 
-    let search_block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Search (Press /) ").border_style(Style::default().fg(theme));
+    let search_title = if app.downloader.search_albums_only { " Search (Albums Only) (Press / to type, a to toggle) " } else { " Search (Tracks & Playlists) (Press / to type, a to toggle) " };
+    let search_block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(search_title).border_style(Style::default().fg(theme));
     
     let mut search_text = format!("> {}", app.downloader.query);
-    if app.modal == Modal::Search && app.active_tab == ActiveTab::Downloader {
+    if app.modal == Modal::DownloaderSearch && app.active_tab == ActiveTab::Downloader {
         search_text.push('█'); // Cursor block
     }
     
@@ -1718,21 +1799,30 @@ fn draw_downloader_tab(f: &mut Frame, app: &mut App, area: Rect, theme: Color) {
     let search_para = Paragraph::new(format!("{} | {}", search_text, *status)).block(search_block);
     f.render_widget(search_para, chunks[0]);
 
+    let body_chunks = Layout::default().direction(Direction::Horizontal).constraints([
+        Constraint::Percentage(50), Constraint::Percentage(50)
+    ]).split(chunks[1]);
+
     let results = app.downloader.results.lock().unwrap();
     let items: Vec<ListItem> = results.iter().enumerate().map(|(i, r)| {
         let prefix = if i == app.downloader.selected_index { ">>" } else { "  " };
+        let checkbox = if app.downloader.selected_results.contains(&i) { "[x]" } else { "[ ]" };
         let title = r.title.as_deref().unwrap_or("Unknown Title");
         let uploader = r.uploader.as_deref().unwrap_or("Unknown Uploader");
         let duration = r.duration.unwrap_or(0.0) as u64;
         let style = if i == app.downloader.selected_index { Style::default().fg(theme).add_modifier(Modifier::BOLD) } else { Style::default() };
-        ListItem::new(format!("{} {} - {} [{:02}:{:02}]", prefix, uploader, title, duration / 60, duration % 60)).style(style)
+        ListItem::new(format!("{} {} {} - {} [{:02}:{:02}]", prefix, checkbox, uploader, title, duration / 60, duration % 60)).style(style)
     }).collect();
 
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Results (s to download) ").border_style(Style::default().fg(theme)));
-    
-    // We don't have a stateful widget for this yet, so we'll just render it directly
-    // Ideally we would add downloader_state: ListState to App
-    f.render_widget(list, chunks[1]);
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Results (s to select, d to download) ").border_style(Style::default().fg(theme)));
+    f.render_widget(list, body_chunks[0]);
+
+    let logs = app.downloader.download_log.lock().unwrap();
+    let log_items: Vec<ListItem> = logs.iter().map(|l| ListItem::new(l.as_str())).collect();
+    let log_list = List::new(log_items).block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Download Log ").border_style(Style::default().fg(theme)));
+    let mut state = ListState::default();
+    if !logs.is_empty() { state.select(Some(logs.len().saturating_sub(1))); }
+    f.render_stateful_widget(log_list, body_chunks[1], &mut state);
 }
 
 fn draw_metadata_tab(f: &mut Frame, app: &mut App, area: Rect, theme: Color) {

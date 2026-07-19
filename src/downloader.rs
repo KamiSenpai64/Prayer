@@ -155,7 +155,6 @@ impl DownloaderState {
                    .arg("--extract-audio").arg("--audio-format").arg("m4a")
                    .arg("--embed-metadata")
                    .arg("--cookies-from-browser").arg("firefox")
-                   .arg("--write-subs").arg("--sub-format").arg("lrc/srv3/vtt").arg("--convert-subs").arg("lrc")
                    .arg("-o").arg(format!("{}/%(artist,uploader)s/(%(release_year,upload_date>%Y)s) - %(album,playlist_title,title)s/%(playlist_index&{{}} - |)s%(title)s.%(ext)s", tmp_dir))
                    .arg("--parse-metadata").arg("title:%(artist)s - %(title)s")
                    .arg("--parse-metadata").arg("uploader:%(artist)s")

@@ -181,10 +181,15 @@ impl MetadataState {
         
         thread::spawn(move || {
             let client = reqwest::blocking::Client::new();
+            let re = regex::Regex::new(r"(?i)[\(\[\{].*?(official|video|audio|lyric|visualizer|hq|hd|live|remaster|edit|version).*?[\)\]\}]").unwrap();
+            
             for track in album.tracks {
+                let cleaned_title = re.replace_all(&track.title, "").to_string();
+                let cleaned_title = cleaned_title.trim();
+                
                 let url = format!(
                     "https://lrclib.net/api/search?track_name={}&artist_name={}",
-                    urlencoding::encode(&track.title),
+                    urlencoding::encode(cleaned_title),
                     urlencoding::encode(&track.artist)
                 );
                 

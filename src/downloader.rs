@@ -42,7 +42,7 @@ impl DownloaderState {
             selected_index: 0,
             cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             active_pid: Arc::new(Mutex::new(None)),
-            search_albums_only: false,
+            search_albums_only: true,
         }
     }
 

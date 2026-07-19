@@ -183,10 +183,9 @@ impl MetadataState {
             let client = reqwest::blocking::Client::new();
             for track in album.tracks {
                 let url = format!(
-                    "https://lrclib.net/api/search?track_name={}&artist_name={}&album_name={}",
+                    "https://lrclib.net/api/search?track_name={}&artist_name={}",
                     urlencoding::encode(&track.title),
-                    urlencoding::encode(&track.artist),
-                    urlencoding::encode(&track.album)
+                    urlencoding::encode(&track.artist)
                 );
                 
                 if let Ok(resp) = client.get(&url).send() {

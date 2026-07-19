@@ -1035,13 +1035,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             app.sync_focus_to_tab();
             app.metadata_editor.scan_directory();
             for i in 0..app.metadata_editor.albums.len() {
-                app.metadata_editor.fetch_lyrics(i);
+        app.metadata_editor.fetch_lyrics(i);
             }
         }
 
         if crossterm::event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == crossterm::event::KeyEventKind::Release { continue; }
+            if let Event::Key(key) = crossterm::event::read()? {
+                if key.kind != crossterm::event::KeyEventKind::Press { continue; }
+                
+                // Clear fetching lyrics status on next keypress if finished
+                if !*app.metadata_editor.is_loading.lock().unwrap() && app.metadata_editor.status.starts_with("Fetching") {
+                    app.metadata_editor.status = "Finished fetching lyrics.".to_string();
+                }
                 match app.modal {
                     Modal::Search => {
                         match key.code {

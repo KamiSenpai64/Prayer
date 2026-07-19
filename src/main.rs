@@ -60,7 +60,7 @@ impl Default for AppConfig {
 
 fn load_config() -> AppConfig {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let config_dir = PathBuf::from(home).join(".config").join("tui_player");
+    let config_dir = PathBuf::from(home).join(".config").join("prayer");
     fs::create_dir_all(&config_dir).ok();
     
     let config_path = config_dir.join("config.toml");
@@ -84,7 +84,7 @@ struct PlaylistsData {
 
 fn load_playlists() -> PlaylistsData {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let path = PathBuf::from(home).join(".config").join("tui_player").join("playlists.toml");
+    let path = PathBuf::from(home).join(".config").join("prayer").join("playlists.toml");
     if let Ok(data) = fs::read_to_string(&path) {
         if let Ok(pl) = toml::from_str(&data) {
             return pl;
@@ -95,7 +95,7 @@ fn load_playlists() -> PlaylistsData {
 
 fn save_playlists(data: &PlaylistsData) {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let path = PathBuf::from(home).join(".config").join("tui_player").join("playlists.toml");
+    let path = PathBuf::from(home).join(".config").join("prayer").join("playlists.toml");
     if let Ok(toml_str) = toml::to_string_pretty(data) {
         fs::write(path, toml_str).ok();
     }
@@ -1038,7 +1038,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
 
         if crossterm::event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind != crossterm::event::KeyEventKind::Press { continue; }
+                if key.kind == crossterm::event::KeyEventKind::Release { continue; }
                 match app.modal {
                     Modal::Search => {
                         match key.code {
@@ -1119,6 +1119,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         else if let KeyCode::Char(c) = key.code { app.new_playlist_name.push(c); }
                     },
                     Modal::EditMetadata => {
+                        let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tui_player_keys.log").and_then(|mut f| {
+                            use std::io::Write;
+                            writeln!(f, "EditMetadata key: {:?} kind: {:?} focus: {} bulk: {}", key.code, key.kind, app.edit_focus, app.is_bulk_edit)
+                        });
                         match key.code {
                             KeyCode::Esc => app.modal = Modal::None,
                             KeyCode::Tab | KeyCode::Down => {
@@ -1165,6 +1169,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                     5 => if !app.is_bulk_edit { app.edit_filename.pop(); },
                                     _ => {}
                                 }
+                                let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tui_player_keys.log").and_then(|mut f| {
+                                    use std::io::Write;
+                                    writeln!(f, "After Backspace, title is now: {}", app.edit_title)
+                                });
                             },
                             KeyCode::Char(c) => {
                                 match app.edit_focus {
@@ -1176,6 +1184,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                                     5 => if !app.is_bulk_edit { app.edit_filename.push(c); },
                                     _ => {}
                                 }
+                                let _ = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/tui_player_keys.log").and_then(|mut f| {
+                                    use std::io::Write;
+                                    writeln!(f, "After Char({}), title is now: {}", c, app.edit_title)
+                                });
                             },
                             _ => {}
                         }
@@ -1706,7 +1718,7 @@ fn draw_modal(f: &mut Frame, app: &mut App, theme: Color) {
         f.render_widget(input_text, inner);
 
     } else if app.modal == Modal::EditMetadata {
-        let area = centered_rect(50, if app.is_bulk_edit { 30 } else { 40 }, f.area());
+        let area = centered_rect(80, if app.is_bulk_edit { 40 } else { 50 }, f.area());
         f.render_widget(Clear, area);
         let title_text = if app.is_bulk_edit { " Bulk Edit Album (Enter to Save) " } else { " Edit Metadata (Enter to Save) " };
         let block = Block::default().title(title_text).borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(theme));
@@ -1737,7 +1749,14 @@ fn draw_modal(f: &mut Frame, app: &mut App, theme: Color) {
             let mut text = format!("{}", val);
             if app.edit_focus == idx { text.push('█'); }
             let style = if app.edit_focus == idx { Style::default().fg(theme) } else { Style::default() };
-            let p = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(label).border_style(style));
+            
+            let inner_width = chunks[idx].width.saturating_sub(2);
+            let text_len = text.chars().count() as u16;
+            let scroll_x = if text_len > inner_width { text_len - inner_width } else { 0 };
+            
+            let p = Paragraph::new(text)
+                .block(Block::default().borders(Borders::ALL).title(label).border_style(style))
+                .scroll((0, scroll_x));
             f.render_widget(p, chunks[idx]);
         }
     } else if app.modal == Modal::Help {

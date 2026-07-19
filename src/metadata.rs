@@ -65,6 +65,32 @@ impl MetadataState {
                         tag_album = tag.album().unwrap_or("").to_string();
                         tag_year = tag.year().map(|y| y.to_string()).unwrap_or_else(|| "".to_string());
                         tag_track_number = tag.track_number().map(|t| t.to_string()).unwrap_or_else(|| "".to_string());
+                    } else {
+                        // File might be a corrupted yt-dlp container, attempt a quick remux to fix it
+                        let temp_path = path.with_extension("m4a.tmp");
+                        if let Ok(mut child) = std::process::Command::new("ffmpeg")
+                            .arg("-y").arg("-i").arg(path)
+                            .arg("-c").arg("copy")
+                            .arg(&temp_path)
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn() 
+                        {
+                            let _ = child.wait();
+                            if temp_path.exists() && std::fs::metadata(&temp_path).map(|m| m.len()).unwrap_or(0) > 0 {
+                                let _ = std::fs::rename(&temp_path, path);
+                                // Try reading again after remuxing
+                                if let Ok(tag) = Tag::read_from_path(path) {
+                                    tag_title = tag.title().unwrap_or("").to_string();
+                                    tag_artist = tag.artist().unwrap_or("").to_string();
+                                    tag_album = tag.album().unwrap_or("").to_string();
+                                    tag_year = tag.year().map(|y| y.to_string()).unwrap_or_else(|| "".to_string());
+                                    tag_track_number = tag.track_number().map(|t| t.to_string()).unwrap_or_else(|| "".to_string());
+                                }
+                            } else {
+                                let _ = std::fs::remove_file(&temp_path);
+                            }
+                        }
                     }
                     
                     if tag_artist.is_empty() || tag_artist == "Unknown Artist" {

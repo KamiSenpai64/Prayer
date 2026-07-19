@@ -1,54 +1,42 @@
-# TUI Player
+# Prayer
 
-A sleek, heavily customized, terminal-based music player built in Rust. Enjoy a visually rich TUI (Terminal User Interface) that brings all your local music alive.
+A terminal-based music player and metadata manager written in Rust.
 
 ## Features
-
-- **Modern TUI**: Aesthetic, dynamic layout with high-quality styling.
-- **Focused Mode (`ALT+SHIFT+N`)**: Instantly enter a distraction-free Dashboard featuring large synced lyrics, queue, file info, and album art layout.
-- **Album Art Previews**: Seamless rendering of Album Art directly in the terminal (utilizing compatible terminal capabilities).
-- **Playlists Manager**: Create, view, add, and remove tracks from completely localized, persistent playlists.
-- **Global Search (`CTRL+S`)**: Instantly search your entire music library by track, artist, album, or year.
-- **Synced Lyrics (.lrc)**: Automatically locates and displays synced `.lrc` lyrics in real-time.
-- **Automated Queueing**: Smart queue management. When a song finishes, the next song plays automatically. Press `Space` on an album to intelligently queue the entire album.
-- **Configurable**: Fully configured via `~/.config/tui_player/config.toml`. Easily change your music directory and primary theme colors!
-
-## Shortcuts
-
-| Keybinding | Action |
-| --- | --- |
-| `h/j/k/l` or `Arrows` | Move Focus / Select |
-| `Tab` / `Shift+Tab` | Cycle Pane Focus |
-| `Ctrl+Tab` or `1/2/3` | Cycle Tabs |
-| `Enter` | Play selected track |
-| `Space` | Play/Pause (or play entire album from Albums tab) |
-| `n` / `.` / `>` | Play Next track |
-| `p` / `,` / `<` | Play Previous track |
-| `-` / `+` | Volume Down / Volume Up |
-| `a` | Toggle track in Queue |
-| `Alt+a` | Add selected track to a Playlist |
-| `d` | Remove track from playlist (or delete playlist) |
-| `Alt+Shift+N` | Toggle Focused Playing Mode |
-| `Ctrl+S` | Open Global Search |
-| `?` | Show Help menu |
-| `q` | Quit |
+- **Library Management**: Browse, play, and organize your music library.
+- **yt-dlp Downloader**: Built-in youtube/soundcloud search and music downloader with automatic metadata writing.
+- **Metadata Editor**: Powerful bulk editor to safely modify ID3/M4A tags for tracks and albums.
+- **Playlists**: Create custom playlists and queue tracks seamlessly.
+- **Sleek TUI**: Fast, customizable Terminal User Interface built with Ratatui.
 
 ## Installation
 
-Ensure you have Rust installed. Clone the repository and run:
+### Prerequisites
+Make sure you have [Rust and Cargo](https://rustup.rs/) installed on your system.
+You will also need `yt-dlp` and `ffmpeg` installed on your system for downloading and metadata parsing.
 
 ```bash
-cargo build --release
+# Ubuntu/Debian
+sudo apt install yt-dlp ffmpeg
+
+# Arch Linux
+sudo pacman -S yt-dlp ffmpeg
 ```
 
-The compiled binary will be located in `target/release/tui_player`. Run the binary and start listening!
+### Install from Source
+1. Clone this repository or download the source code:
+```bash
+git clone https://github.com/yourusername/prayer.git
+cd prayer
+```
+2. Build and install it globally via Cargo:
+```bash
+cargo install --path .
+```
+3. Run the application from anywhere by typing `prayer` in your terminal!
 
 ## Configuration
+Upon running for the first time, Prayer will generate a config file at `~/.config/prayer/config.toml`. You can edit this file to change themes, music directory paths, and animations.
 
-The default music directory is `~/Music`. To change it, edit `~/.config/tui_player/config.toml`:
-
-```toml
-music_directory = "/path/to/your/music"
-theme_color = "Cyan"
-enable_animations = true
-```
+## Keyboard Shortcuts
+Press `?` inside the application to see the full list of keyboard shortcuts!

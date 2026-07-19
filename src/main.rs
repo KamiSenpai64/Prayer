@@ -1792,13 +1792,19 @@ fn draw_modal(f: &mut Frame, app: &mut App, theme: Color) {
         ];
         f.render_widget(Paragraph::new(help_text).wrap(Wrap { trim: false }).alignment(Alignment::Left), inner);
     } else if app.modal == Modal::MoveAlbum {
-        let area = centered_rect(50, 10, f.area());
+        let area = centered_rect(80, 15, f.area());
         f.render_widget(Clear, area);
-        let block = Block::default().title(" Move Album To (Enter to Save) ").borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(theme));
+        let block = Block::default().title(" Move Album To... (Enter to Move) ").borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(theme));
         let inner = block.inner(area);
         f.render_widget(block, area);
-        let input_text = Paragraph::new(format!("> {}█", app.move_album_dest));
-        f.render_widget(input_text, inner);
+
+        let text = app.move_album_dest.clone() + "█";
+        let inner_width = inner.width;
+        let text_len = text.chars().count() as u16;
+        let scroll_x = if text_len > inner_width { text_len - inner_width } else { 0 };
+        
+        let p = Paragraph::new(text).scroll((0, scroll_x));
+        f.render_widget(p, inner);
     }
 }
 

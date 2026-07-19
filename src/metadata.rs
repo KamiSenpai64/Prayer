@@ -229,6 +229,10 @@ impl MetadataState {
                 let dest_lrc_path = dest_path.with_extension("lrc");
                 let _ = std::fs::rename(&lrc_path, &dest_lrc_path);
             }
+            
+            if let Some(parent) = track.path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
         }
         
         if self.selected_album >= self.albums.len() {

@@ -1726,7 +1726,9 @@ fn draw_modal(f: &mut Frame, app: &mut App, theme: Color) {
         f.render_widget(input_text, inner);
 
     } else if app.modal == Modal::EditMetadata {
-        let area = centered_rect(80, if app.is_bulk_edit { 40 } else { 50 }, f.area());
+        let req_height = if app.is_bulk_edit { 11 } else { 20 };
+        let percent_y = ((req_height as f32 / f.area().height.max(1) as f32) * 100.0) as u16;
+        let area = centered_rect(80, percent_y.clamp(10, 100), f.area());
         f.render_widget(Clear, area);
         let title_text = if app.is_bulk_edit { " Bulk Edit Album (Enter to Save) " } else { " Edit Metadata (Enter to Save) " };
         let block = Block::default().title(title_text).borders(Borders::ALL).border_type(BorderType::Rounded).border_style(Style::default().fg(theme));

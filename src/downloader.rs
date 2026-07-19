@@ -194,6 +194,32 @@ impl DownloaderState {
                     *pid_arc.lock().unwrap() = None;
                 }
             }
+
+            if !cancel_arc.load(std::sync::atomic::Ordering::SeqCst) {
+                // Remux all .m4a files to fix container atom structure for mp4ameta
+                for entry in walkdir::WalkDir::new(&tmp_dir).into_iter().filter_map(|e| e.ok()) {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("m4a") {
+                        let temp_path = path.with_extension("m4a.tmp");
+                        if let Ok(mut child) = Command::new("ffmpeg")
+                            .arg("-y").arg("-i").arg(path)
+                            .arg("-c").arg("copy")
+                            .arg(&temp_path)
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn() 
+                        {
+                            let _ = child.wait();
+                            if temp_path.exists() && std::fs::metadata(&temp_path).map(|m| m.len()).unwrap_or(0) > 0 {
+                                let _ = std::fs::rename(&temp_path, path);
+                            } else {
+                                let _ = std::fs::remove_file(&temp_path);
+                            }
+                        }
+                    }
+                }
+            }
+
             *is_downloading_arc.lock().unwrap() = false;
             *download_finished_arc.lock().unwrap() = true;
             *status_arc.lock().unwrap() = "Download complete.".to_string();

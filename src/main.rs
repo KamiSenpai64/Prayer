@@ -1032,11 +1032,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
         }
         if finished {
             app.active_tab = ActiveTab::Metadata;
+            app.sync_focus_to_tab();
             app.metadata_editor.scan_directory();
         }
 
         if crossterm::event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
+                if key.kind != crossterm::event::KeyEventKind::Press { continue; }
                 match app.modal {
                     Modal::Search => {
                         match key.code {

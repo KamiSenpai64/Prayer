@@ -1,3 +1,5 @@
+mod downloader;
+mod metadata;
 use audiotags::Tag;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
@@ -107,6 +109,8 @@ const ICON_PLAY: &str = "";
 const ICON_PAUSE: &str = "";
 const ICON_STOP: &str = "";
 const ICON_QUEUE: &str = "";
+const ICON_SEARCH: &str = "";
+const ICON_FOLDER: &str = "";
 
 // --- Symphonia Decoder ---
 struct MyMediaSource { inner: Cursor<Vec<u8>> }
@@ -196,10 +200,10 @@ struct Track {
 }
 
 #[derive(PartialEq, Clone, Copy)]
-enum ActiveTab { Player, Albums, Playlists }
+enum ActiveTab { Player, Albums, Playlists, Downloader, Metadata }
 
 #[derive(PartialEq)]
-enum Focus { Artist, Album, Track, Queue, AlbumsView, PlaylistsList, PlaylistsTracks }
+enum Focus { Artist, Album, Track, Queue, AlbumsView, PlaylistsList, PlaylistsTracks, Downloader, Metadata }
 
 #[derive(PartialEq)]
 enum Modal { None, Search, Help, PlaylistSelect, PlaylistCreate }
@@ -251,6 +255,8 @@ struct App {
     tick_count: u64,
     volume: f32,
     is_focused_mode: bool,
+    downloader: downloader::DownloaderState,
+    metadata_editor: metadata::MetadataState,
 }
 
 impl App {
@@ -337,6 +343,20 @@ impl App {
             tick_count: 0,
             volume: 1.0,
             is_focused_mode: false,
+            downloader: downloader::DownloaderState::new(
+                dirs::config_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join("Prayer")
+                    .join("tmp")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            metadata_editor: metadata::MetadataState::new(
+                dirs::config_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join("Prayer")
+                    .join("tmp")
+            ),
         };
 
         if !app.artists.is_empty() {
@@ -428,15 +448,19 @@ impl App {
         self.active_tab = match self.active_tab {
             ActiveTab::Player => ActiveTab::Albums,
             ActiveTab::Albums => ActiveTab::Playlists,
-            ActiveTab::Playlists => ActiveTab::Player,
+            ActiveTab::Playlists => ActiveTab::Downloader,
+            ActiveTab::Downloader => ActiveTab::Metadata,
+            ActiveTab::Metadata => ActiveTab::Player,
         };
         self.sync_focus_to_tab();
     }
     fn prev_tab(&mut self) {
         self.active_tab = match self.active_tab {
-            ActiveTab::Player => ActiveTab::Playlists,
-            ActiveTab::Playlists => ActiveTab::Albums,
+            ActiveTab::Player => ActiveTab::Metadata,
             ActiveTab::Albums => ActiveTab::Player,
+            ActiveTab::Playlists => ActiveTab::Albums,
+            ActiveTab::Downloader => ActiveTab::Playlists,
+            ActiveTab::Metadata => ActiveTab::Downloader,
         };
         self.sync_focus_to_tab();
     }
@@ -444,6 +468,8 @@ impl App {
         if self.active_tab == ActiveTab::Albums { self.focus = Focus::AlbumsView; } 
         else if self.active_tab == ActiveTab::Player { self.focus = Focus::Track; }
         else if self.active_tab == ActiveTab::Playlists { self.focus = Focus::PlaylistsList; }
+        else if self.active_tab == ActiveTab::Downloader { self.focus = Focus::Downloader; }
+        else if self.active_tab == ActiveTab::Metadata { self.focus = Focus::Metadata; }
     }
 
     fn next_focus(&mut self) {
@@ -494,6 +520,10 @@ impl App {
             Focus::PlaylistsTracks => if let Some(i) = self.playlists_track_state.selected() {
                 self.playlists_track_state.select(Some(i.saturating_sub(1)));
             },
+            Focus::Downloader => {
+                self.downloader.selected_index = self.downloader.selected_index.saturating_sub(1);
+            },
+            Focus::Metadata => {},
         }
         if self.active_tab == ActiveTab::Player && self.focus != Focus::Queue { self.update_cascading_selection(); }
     }
@@ -536,20 +566,25 @@ impl App {
                 let next = (i + 1).min(self.playlists.lists.len().saturating_sub(1));
                 self.playlists_list_state.select(Some(next)); self.playlists_track_state.select(Some(0));
             } else if !self.playlists.lists.is_empty() { self.playlists_list_state.select(Some(0)); },
-            Focus::PlaylistsTracks => {
+            Focus::PlaylistsTracks => if let Some(pl_idx) = self.playlists_list_state.selected() {
                 let mut pl_names: Vec<String> = self.playlists.lists.keys().cloned().collect();
                 pl_names.sort();
-                if let Some(pl_idx) = self.playlists_list_state.selected() {
-                    if let Some(pl_name) = pl_names.get(pl_idx) {
-                        if let Some(paths) = self.playlists.lists.get(pl_name) {
-                            if let Some(i) = self.playlists_track_state.selected() {
-                                let next = (i + 1).min(paths.len().saturating_sub(1));
-                                self.playlists_track_state.select(Some(next));
-                            } else if !paths.is_empty() { self.playlists_track_state.select(Some(0)); }
-                        }
+                if let Some(pl_name) = pl_names.get(pl_idx) {
+                    if let Some(paths) = self.playlists.lists.get(pl_name) {
+                        if let Some(i) = self.playlists_track_state.selected() {
+                            let next = (i + 1).min(paths.len().saturating_sub(1));
+                            self.playlists_track_state.select(Some(next));
+                        } else if !paths.is_empty() { self.playlists_track_state.select(Some(0)); }
                     }
                 }
             },
+            Focus::Downloader => {
+                let len = self.downloader.results.lock().unwrap().len();
+                if len > 0 {
+                    self.downloader.selected_index = (self.downloader.selected_index + 1).min(len - 1);
+                }
+            },
+            Focus::Metadata => {},
         }
         if self.active_tab == ActiveTab::Player && self.focus != Focus::Queue { self.update_cascading_selection(); }
     }
@@ -904,7 +939,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                         match key.code {
                             KeyCode::Esc => app.modal = Modal::None,
                             KeyCode::Enter => {
-                                app.play_selected();
+                                if app.active_tab == ActiveTab::Downloader {
+                                    app.downloader.search(app.search_query.clone());
+                                } else {
+                                    app.play_selected();
+                                }
                                 app.modal = Modal::None;
                             },
                             KeyCode::Up => {
@@ -998,6 +1037,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             app.update_search();
                             continue;
                         }
+                        if key.code == KeyCode::Char('/') && app.active_tab == ActiveTab::Downloader {
+                            app.modal = Modal::Search;
+                            app.search_query.clear();
+                            continue;
+                        }
                         if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::CONTROL) {
                             if key.modifiers.contains(KeyModifiers::SHIFT) { app.prev_tab(); } else { app.next_tab(); }
                             continue;
@@ -1024,6 +1068,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                             KeyCode::Tab => app.next_focus(),
                             KeyCode::BackTab => app.prev_focus(),
                             KeyCode::Enter => app.play_selected(),
+                            KeyCode::Char('s') => {
+                                if app.active_tab == ActiveTab::Downloader {
+                                    app.downloader.download_selected();
+                                }
+                            },
                             KeyCode::Char(' ') => {
                                 if app.focus == Focus::AlbumsView {
                                     app.play_selected_album();
@@ -1073,10 +1122,16 @@ fn ui(f: &mut Frame, app: &mut App) {
         Constraint::Length(3), Constraint::Min(0), Constraint::Length(3),
     ]).split(f.area());
 
-    let tab_titles = vec![format!(" {} Player ", ICON_MUSIC), format!(" {} Albums ", ICON_ALBUM), format!(" {} Playlists ", ICON_MUSIC)];
+    let tab_titles = vec![
+        format!(" {} Player ", ICON_MUSIC),
+        format!(" {} Albums ", ICON_ALBUM),
+        format!(" {} Playlists ", ICON_MUSIC),
+        format!(" {} Downloader ", ICON_SEARCH),
+        format!(" {} Metadata ", ICON_FOLDER)
+    ];
     let tabs = Tabs::new(tab_titles)
-        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" TUI Player ").border_style(Style::default().fg(theme)))
-        .select(match app.active_tab { ActiveTab::Player => 0, ActiveTab::Albums => 1, ActiveTab::Playlists => 2 })
+        .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Prayer Music Suite ").title_alignment(Alignment::Center).border_style(Style::default().fg(theme)))
+        .select(match app.active_tab { ActiveTab::Player => 0, ActiveTab::Albums => 1, ActiveTab::Playlists => 2, ActiveTab::Downloader => 3, ActiveTab::Metadata => 4 })
         .style(Style::default().fg(Color::White))
         .highlight_style(Style::default().fg(theme).add_modifier(Modifier::BOLD));
     f.render_widget(tabs, main_chunks[0]);
@@ -1088,6 +1143,8 @@ fn ui(f: &mut Frame, app: &mut App) {
             ActiveTab::Player => draw_player_tab(f, app, main_chunks[1], theme),
             ActiveTab::Albums => draw_albums_tab(f, app, main_chunks[1], theme),
             ActiveTab::Playlists => draw_playlists_tab(f, app, main_chunks[1], theme),
+            ActiveTab::Downloader => draw_downloader_tab(f, app, main_chunks[1], theme),
+            ActiveTab::Metadata => draw_metadata_tab(f, app, main_chunks[1], theme),
         }
     }
 
@@ -1416,4 +1473,44 @@ fn draw_modal(f: &mut Frame, app: &mut App, theme: Color) {
         ];
         f.render_widget(Paragraph::new(help_text).wrap(Wrap { trim: false }).alignment(Alignment::Left), inner);
     }
+}
+
+fn draw_downloader_tab(f: &mut Frame, app: &mut App, area: Rect, theme: Color) {
+    let chunks = Layout::default().direction(Direction::Vertical).constraints([
+        Constraint::Length(3),
+        Constraint::Min(0),
+    ]).split(area);
+
+    let search_block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Search (Press /) ").border_style(Style::default().fg(theme));
+    
+    let mut search_text = format!("> {}", app.downloader.query);
+    if app.modal == Modal::Search && app.active_tab == ActiveTab::Downloader {
+        search_text.push('█'); // Cursor block
+    }
+    
+    let status = app.downloader.status.lock().unwrap();
+    let search_para = Paragraph::new(format!("{} | {}", search_text, *status)).block(search_block);
+    f.render_widget(search_para, chunks[0]);
+
+    let results = app.downloader.results.lock().unwrap();
+    let items: Vec<ListItem> = results.iter().enumerate().map(|(i, r)| {
+        let prefix = if i == app.downloader.selected_index { ">>" } else { "  " };
+        let title = r.title.as_deref().unwrap_or("Unknown Title");
+        let uploader = r.uploader.as_deref().unwrap_or("Unknown Uploader");
+        let duration = r.duration.unwrap_or(0.0) as u64;
+        let style = if i == app.downloader.selected_index { Style::default().fg(theme).add_modifier(Modifier::BOLD) } else { Style::default() };
+        ListItem::new(format!("{} {} - {} [{:02}:{:02}]", prefix, uploader, title, duration / 60, duration % 60)).style(style)
+    }).collect();
+
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Results (s to download) ").border_style(Style::default().fg(theme)));
+    
+    // We don't have a stateful widget for this yet, so we'll just render it directly
+    // Ideally we would add downloader_state: ListState to App
+    f.render_widget(list, chunks[1]);
+}
+
+fn draw_metadata_tab(f: &mut Frame, app: &mut App, area: Rect, theme: Color) {
+    let block = Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Metadata Editor ").border_style(Style::default().fg(theme));
+    let para = Paragraph::new("Coming soon...").block(block);
+    f.render_widget(para, area);
 }

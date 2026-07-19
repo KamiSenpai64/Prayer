@@ -356,13 +356,13 @@ impl App {
             downloader: downloader::DownloaderState::new(
                 dirs::config_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join("Prayer")
+                    .join("prayer")
                     .join("tmp")
             ),
             metadata_editor: metadata::MetadataState::new(
                 dirs::config_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
-                    .join("Prayer")
+                    .join("prayer")
                     .join("tmp")
             ),
             edit_title: String::new(),
@@ -1034,6 +1034,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             app.active_tab = ActiveTab::Metadata;
             app.sync_focus_to_tab();
             app.metadata_editor.scan_directory();
+            for i in 0..app.metadata_editor.albums.len() {
+                app.metadata_editor.fetch_lyrics(i);
+            }
         }
 
         if crossterm::event::poll(Duration::from_millis(50))? {
